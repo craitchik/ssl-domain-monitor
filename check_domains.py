@@ -73,26 +73,34 @@ def check_domain_expiry(domain):
 # =====================
 
 def send_mail(subject, body):
-    smtp_host = os.getenv("SMTP_HOST")
-    smtp_port = os.getenv("SMTP_PORT")
+    smtp_server = os.getenv("SMTP_SERVER")
     smtp_user = os.getenv("SMTP_USER")
     smtp_pass = os.getenv("SMTP_PASS")
-    mail_to = os.getenv("MAIL_TO")
+    smtp_to = os.getenv("SMTP_TO")
+    smtp_port = int(os.getenv("SMTP_PORT") or 587)
 
-    if not all([smtp_host, smtp_user, smtp_pass, mail_to]):
+    if not all([smtp_server, smtp_user, smtp_pass, smtp_to]):
         print("Mail ayarları eksik, mail gönderilmedi")
-        return
+        return False
 
-    msg = MIMEMultipart()
+    msg = EmailMessage()
     msg["From"] = smtp_user
-    msg["To"] = mail_to
+    msg["To"] = smtp_to
     msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain"))
+    msg.set_content(body)
 
-    with smtplib.SMTP(smtp_host, smtp_port) as server:
-        server.starttls()
-        server.login(smtp_user, smtp_pass)
-        server.send_message(msg)
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+
+        return True
+
+    except Exception as e:
+        print(f"Mail gönderim hatası: {e}")
+        return False
+
 
 # =====================
 # MAIN
