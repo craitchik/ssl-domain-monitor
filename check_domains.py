@@ -55,6 +55,10 @@ def check_domain_expiry(domain):
     if not expiry_date:
         raise ValueError("Domain expiry tarihi alınamadı")
 
+    # TIMEZONE FIX
+    if expiry_date.tzinfo is not None:
+        expiry_date = expiry_date.replace(tzinfo=None)
+
     remaining_days = (expiry_date - datetime.utcnow()).days
     return expiry_date, remaining_days
 
