@@ -13,9 +13,6 @@ from email.mime.multipart import MIMEMultipart
 # CONFIG
 # =====================
 
-SSL_WARNING_DAYS = 30
-DOMAIN_WARNING_DAYS = 30
-
 DOMAINS_FILE = Path("domains.json")
 
 # =====================
@@ -27,9 +24,6 @@ def load_domains():
         return json.load(f)
 
 def normalize_datetime(dt):
-    """
-    WHOIS bazen liste, bazen naive datetime döndürür.
-    """
     if isinstance(dt, list):
         dt = dt[0]
     if dt and dt.tzinfo is None:
@@ -62,7 +56,7 @@ def check_ssl_expiry(domain):
             return expiry, remaining_days
 
 # =====================
-# DOMAIN (WHOIS) CHECK
+# DOMAIN CHECK
 # =====================
 
 def check_domain_expiry(domain):
@@ -87,7 +81,7 @@ def send_mail(subject, body):
     mail_to = os.getenv("MAIL_TO")
 
     if not all([smtp_host, smtp_user, smtp_pass, mail_to]):
-        print("Mail ayarları eksik, mail gönderilmedi.")
+        print("Mail ayarları eksik, mail gönderilmedi")
         return
 
     msg = MIMEMultipart()
@@ -107,37 +101,32 @@ def send_mail(subject, body):
 
 def main():
     domains = load_domains()
-    report_lines = []
-    overall_risk = "OK"
+    risk_report = []
 
     print("\nDomain monitor started (SSL + WHOIS)\n")
 
     for domain in domains:
-        report_lines.append(f"Domain: {domain}")
+        print(f"Checking {domain}")
 
         # ---- SSL ----
         try:
-            ssl_expiry, ssl_days = check_ssl_expiry(domain)
+            _, ssl_days = check_ssl_expiry(domain)
             ssl_risk = risk_level(ssl_days)
-
-            report_lines.append(f"  SSL Expiry      : {ssl_expiry}")
-            report_lines.append(f"  SSL Remaining   : {ssl_days} days")
-            report_lines.append(f"  SSL Risk        : {ssl_risk}")
+            ssl_error = None
         except Exception as e:
+            ssl_days = None
             ssl_risk = "ERROR"
-            report_lines.append(f"  SSL check FAILED: {e}")
+            ssl_error = str(e)
 
         # ---- DOMAIN ----
         try:
-            dom_expiry, dom_days = check_domain_expiry(domain)
+            _, dom_days = check_domain_expiry(domain)
             dom_risk = risk_level(dom_days)
-
-            report_lines.append(f"  Domain Expiry   : {dom_expiry}")
-            report_lines.append(f"  Domain Remaining: {dom_days} days")
-            report_lines.append(f"  Domain Risk     : {dom_risk}")
+            dom_error = None
         except Exception as e:
+            dom_days = None
             dom_risk = "ERROR"
-            report_lines.append(f"  Domain check FAILED: {e}")
+            dom_error = str(e)
 
         # ---- OVERALL ----
         if "CRITICAL" in (ssl_risk, dom_risk):
@@ -149,20 +138,52 @@ def main():
         else:
             overall = "OK"
 
-        report_lines.append(f"  OVERALL RISK    : {overall}")
-        report_lines.append("-" * 50)
+        if overall != "OK":
+            risk_report.append({
+                "domain": domain,
+                "ssl_risk": ssl_risk,
+                "ssl_days": ssl_days,
+                "ssl_error": ssl_error,
+                "domain_risk": dom_risk,
+                "domain_days": dom_days,
+                "domain_error": dom_error,
+                "overall": overall
+            })
 
-        if overall in ["CRITICAL", "WARNING"]:
-            overall_risk = overall
+    # =====================
+    # MAIL REPORT
+    # =====================
 
-    report = "\n".join(report_lines)
-    print(report)
+    if risk_report:
+        lines = []
+        lines.append("SSL & Domain Expiry Risk Report\n")
+        lines.append(f"Toplam riskli domain: {len(risk_report)}\n")
 
-    if overall_risk in ["CRITICAL", "WARNING"]:
-        send_mail(
-            subject=f"[ALERT] Domain & SSL Expiry Warning ({overall_risk})",
-            body=report
-        )
+        for r in risk_report:
+            lines.append(f"- {r['domain']}")
+            lines.append(
+                f"  SSL Risk    : {r['ssl_risk']} "
+                f"({r['ssl_days']} days)"
+            )
+            if r["ssl_error"]:
+                lines.append(f"  SSL Error   : {r['ssl_error']}")
+
+            lines.append(
+                f"  Domain Risk : {r['domain_risk']} "
+                f"({r['domain_days']} days)"
+            )
+            if r["domain_error"]:
+                lines.append(f"  Domain Error: {r['domain_error']}")
+
+            lines.append(f"  OVERALL     : {r['overall']}\n")
+
+        body = "\n".join(lines)
+        subject = f"[ALERT] Domain & SSL Risk Report ({len(risk_report)})"
+
+        send_mail(subject, body)
+        print("Risk maili gönderildi")
+    else:
+        print("Risk yok, mail gönderilmedi")
 
 # =====================
 # ENTRY
