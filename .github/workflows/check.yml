@@ -16,6 +16,10 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install dependencies
+        run: |
+          pip install python-whois
+
       - name: Run domain check script
         run: |
           python check_domains.py
