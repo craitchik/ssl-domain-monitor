@@ -80,9 +80,17 @@ def send_mail(subject, body):
     smtp_pass = os.getenv("SMTP_PASS")
     mail_to = os.getenv("MAIL_TO")
 
+    # --- DEBUG (GEÇİCİ) ---
+    print("DEBUG SMTP_HOST set:", bool(smtp_host))
+    print("DEBUG SMTP_USER set:", bool(smtp_user))
+    print("DEBUG SMTP_PASS set:", bool(smtp_pass))
+    print("DEBUG MAIL_TO set  :", bool(mail_to))
+    # ---------------------
+
     if not all([smtp_host, smtp_user, smtp_pass, mail_to]):
         print("Mail ayarları eksik, mail gönderilmedi")
         return
+
 
     msg = MIMEMultipart()
     msg["From"] = smtp_user
