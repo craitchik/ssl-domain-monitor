@@ -1,5 +1,8 @@
 import json
+import ssl
+import socket
 from pathlib import Path
+from datetime import datetime
 
 
 def load_domains():
@@ -14,22 +17,19 @@ def load_domains():
     return data.get("domains", [])
 
 
-def main():
-    print("Domain monitor started")
+def check_ssl_expiry(domain, timeout=5):
+    context = ssl.create_default_context()
 
-    domains = load_domains()
+    with socket.create_connection((domain, 443), timeout=timeout) as sock:
+        with context.wrap_socket(sock, server_hostname=domain) as ssock:
+            cert = ssock.getpeercert()
 
-    if not domains:
-        print("Tanımlı domain bulunamadı")
-        return
+    not_after_str = cert.get("notAfter")
+    if not not_after_str:
+        raise ValueError("Sertifika bitiş tarihi alınamadı")
 
-    print(f"Toplam {len(domains)} domain kontrol edilecek:\n")
+    expiry_date = datetime.strptime(
+        not_after_str, "%b %d %H:%M:%S %Y %Z"
+    )
 
-    for domain in domains:
-        print(f"- {domain}")
-
-    print("\nDomain listesi başarıyla okundu")
-
-
-if __name__ == "__main__":
-    main()
+    remaining_days = (expi_
