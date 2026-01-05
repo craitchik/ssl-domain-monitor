@@ -9,10 +9,6 @@ from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-# =====================
-# CONFIG
-# =====================
-
 DOMAINS_FILE = Path("domains.json")
 
 # =====================
@@ -21,7 +17,10 @@ DOMAINS_FILE = Path("domains.json")
 
 def load_domains():
     with open(DOMAINS_FILE, "r") as f:
-        return json.load(f)
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError("domains.json must be a JSON array")
+    return data
 
 def normalize_datetime(dt):
     if isinstance(dt, list):
@@ -56,7 +55,7 @@ def check_ssl_expiry(domain):
             return expiry, remaining_days
 
 # =====================
-# DOMAIN CHECK
+# DOMAIN CHECK (WHOIS)
 # =====================
 
 def check_domain_expiry(domain):
@@ -80,17 +79,9 @@ def send_mail(subject, body):
     smtp_pass = os.getenv("SMTP_PASS")
     mail_to = os.getenv("MAIL_TO")
 
-    # --- DEBUG (GEÇİCİ) ---
-    print("DEBUG SMTP_HOST set:", bool(smtp_host))
-    print("DEBUG SMTP_USER set:", bool(smtp_user))
-    print("DEBUG SMTP_PASS set:", bool(smtp_pass))
-    print("DEBUG MAIL_TO set  :", bool(mail_to))
-    # ---------------------
-
     if not all([smtp_host, smtp_user, smtp_pass, mail_to]):
         print("Mail ayarları eksik, mail gönderilmedi")
         return
-
 
     msg = MIMEMultipart()
     msg["From"] = smtp_user
@@ -116,7 +107,7 @@ def main():
     for domain in domains:
         print(f"Checking {domain}")
 
-        # ---- SSL ----
+        # SSL
         try:
             _, ssl_days = check_ssl_expiry(domain)
             ssl_risk = risk_level(ssl_days)
@@ -126,7 +117,7 @@ def main():
             ssl_risk = "ERROR"
             ssl_error = str(e)
 
-        # ---- DOMAIN ----
+        # DOMAIN
         try:
             _, dom_days = check_domain_expiry(domain)
             dom_risk = risk_level(dom_days)
@@ -136,7 +127,7 @@ def main():
             dom_risk = "ERROR"
             dom_error = str(e)
 
-        # ---- OVERALL ----
+        # OVERALL
         if "CRITICAL" in (ssl_risk, dom_risk):
             overall = "CRITICAL"
         elif "WARNING" in (ssl_risk, dom_risk):
@@ -170,15 +161,13 @@ def main():
         for r in risk_report:
             lines.append(f"- {r['domain']}")
             lines.append(
-                f"  SSL Risk    : {r['ssl_risk']} "
-                f"({r['ssl_days']} days)"
+                f"  SSL Risk    : {r['ssl_risk']} ({r['ssl_days']} days)"
             )
             if r["ssl_error"]:
                 lines.append(f"  SSL Error   : {r['ssl_error']}")
 
             lines.append(
-                f"  Domain Risk : {r['domain_risk']} "
-                f"({r['domain_days']} days)"
+                f"  Domain Risk : {r['domain_risk']} ({r['domain_days']} days)"
             )
             if r["domain_error"]:
                 lines.append(f"  Domain Error: {r['domain_error']}")
@@ -192,10 +181,6 @@ def main():
         print("Risk maili gönderildi")
     else:
         print("Risk yok, mail gönderilmedi")
-
-# =====================
-# ENTRY
-# =====================
 
 if __name__ == "__main__":
     main()
