@@ -1,142 +1,172 @@
-import json
+import os
 import ssl
+import json
 import socket
+import smtplib
 import whois
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
+# =====================
+# CONFIG
+# =====================
 
 SSL_WARNING_DAYS = 30
-SSL_CRITICAL_DAYS = 10
-
 DOMAIN_WARNING_DAYS = 30
-DOMAIN_CRITICAL_DAYS = 15
 
+DOMAINS_FILE = Path("domains.json")
+
+# =====================
+# HELPERS
+# =====================
 
 def load_domains():
-    file_path = Path("domains.json")
+    with open(DOMAINS_FILE, "r") as f:
+        return json.load(f)
 
-    if not file_path.exists():
-        raise FileNotFoundError("domains.json bulunamadı")
+def normalize_datetime(dt):
+    """
+    WHOIS bazen liste, bazen naive datetime döndürür.
+    """
+    if isinstance(dt, list):
+        dt = dt[0]
+    if dt and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+def risk_level(days):
+    if days is None:
+        return "ERROR"
+    if days <= 7:
+        return "CRITICAL"
+    if days <= 30:
+        return "WARNING"
+    return "OK"
 
-    return data.get("domains", [])
+# =====================
+# SSL CHECK
+# =====================
 
-
-def check_ssl_expiry(domain, timeout=5):
+def check_ssl_expiry(domain):
     context = ssl.create_default_context()
-
-    with socket.create_connection((domain, 443), timeout=timeout) as sock:
+    with socket.create_connection((domain, 443), timeout=10) as sock:
         with context.wrap_socket(sock, server_hostname=domain) as ssock:
             cert = ssock.getpeercert()
+            expiry = datetime.strptime(
+                cert["notAfter"], "%b %d %H:%M:%S %Y %Z"
+            ).replace(tzinfo=timezone.utc)
 
-    not_after_str = cert.get("notAfter")
-    if not not_after_str:
-        raise ValueError("SSL bitiş tarihi alınamadı")
+            remaining_days = (expiry - datetime.now(timezone.utc)).days
+            return expiry, remaining_days
 
-    expiry_date = datetime.strptime(
-        not_after_str, "%b %d %H:%M:%S %Y %Z"
-    )
-
-    remaining_days = (expiry_date - datetime.utcnow()).days
-    return expiry_date, remaining_days
-
+# =====================
+# DOMAIN (WHOIS) CHECK
+# =====================
 
 def check_domain_expiry(domain):
     w = whois.whois(domain)
+    expiry = normalize_datetime(w.expiration_date)
 
-    expiry_date = w.expiration_date
+    if not expiry:
+        return None, None
 
-    if isinstance(expiry_date, list):
-        expiry_date = expiry_date[0]
+    remaining_days = (expiry - datetime.now(timezone.utc)).days
+    return expiry, remaining_days
 
-    if not expiry_date:
-        raise ValueError("Domain expiry tarihi alınamadı")
+# =====================
+# MAIL
+# =====================
 
-    # TIMEZONE FIX
-    if expiry_date.tzinfo is not None:
-        expiry_date = expiry_date.replace(tzinfo=None)
+def send_mail(subject, body):
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = int(os.getenv("SMTP_PORT", 587))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    mail_to = os.getenv("MAIL_TO")
 
-    remaining_days = (expiry_date - datetime.utcnow()).days
-    return expiry_date, remaining_days
+    if not all([smtp_host, smtp_user, smtp_pass, mail_to]):
+        print("Mail ayarları eksik, mail gönderilmedi.")
+        return
 
+    msg = MIMEMultipart()
+    msg["From"] = smtp_user
+    msg["To"] = mail_to
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
 
-def risk_level(remaining_days, warning, critical):
-    if remaining_days < critical:
-        return "CRITICAL"
-    elif remaining_days < warning:
-        return "WARNING"
-    else:
-        return "OK"
+    with smtplib.SMTP(smtp_host, smtp_port) as server:
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.send_message(msg)
 
+# =====================
+# MAIN
+# =====================
 
 def main():
-    print("Domain monitor started (SSL + WHOIS)\n")
-
     domains = load_domains()
-    risky_domains = []
+    report_lines = []
+    overall_risk = "OK"
+
+    print("\nDomain monitor started (SSL + WHOIS)\n")
 
     for domain in domains:
-        print(f"Domain: {domain}")
+        report_lines.append(f"Domain: {domain}")
 
-        # SSL CHECK
+        # ---- SSL ----
         try:
             ssl_expiry, ssl_days = check_ssl_expiry(domain)
-            ssl_risk = risk_level(
-                ssl_days, SSL_WARNING_DAYS, SSL_CRITICAL_DAYS
-            )
-            print(f"  SSL Expiry      : {ssl_expiry}")
-            print(f"  SSL Remaining   : {ssl_days} days")
-            print(f"  SSL Risk        : {ssl_risk}")
-        except Exception as e:
-            ssl_expiry = None
-            ssl_days = None
-            ssl_risk = "ERROR"
-            print(f"  SSL check FAILED: {e}")
+            ssl_risk = risk_level(ssl_days)
 
-        # DOMAIN CHECK
+            report_lines.append(f"  SSL Expiry      : {ssl_expiry}")
+            report_lines.append(f"  SSL Remaining   : {ssl_days} days")
+            report_lines.append(f"  SSL Risk        : {ssl_risk}")
+        except Exception as e:
+            ssl_risk = "ERROR"
+            report_lines.append(f"  SSL check FAILED: {e}")
+
+        # ---- DOMAIN ----
         try:
             dom_expiry, dom_days = check_domain_expiry(domain)
-            dom_risk = risk_level(
-                dom_days, DOMAIN_WARNING_DAYS, DOMAIN_CRITICAL_DAYS
-            )
-            print(f"  Domain Expiry   : {dom_expiry}")
-            print(f"  Domain Remaining: {dom_days} days")
-            print(f"  Domain Risk     : {dom_risk}")
+            dom_risk = risk_level(dom_days)
+
+            report_lines.append(f"  Domain Expiry   : {dom_expiry}")
+            report_lines.append(f"  Domain Remaining: {dom_days} days")
+            report_lines.append(f"  Domain Risk     : {dom_risk}")
         except Exception as e:
-            dom_expiry = None
-            dom_days = None
             dom_risk = "ERROR"
-            print(f"  Domain check FAILED: {e}")
+            report_lines.append(f"  Domain check FAILED: {e}")
 
-        # TOPLAM RİSK
+        # ---- OVERALL ----
         if "CRITICAL" in (ssl_risk, dom_risk):
-            overall_risk = "CRITICAL"
+            overall = "CRITICAL"
         elif "WARNING" in (ssl_risk, dom_risk):
-            overall_risk = "WARNING"
+            overall = "WARNING"
         elif "ERROR" in (ssl_risk, dom_risk):
-            overall_risk = "ERROR"
+            overall = "ERROR"
         else:
-            overall_risk = "OK"
+            overall = "OK"
 
-        print(f"  OVERALL RISK    : {overall_risk}")
-        print("-" * 50)
+        report_lines.append(f"  OVERALL RISK    : {overall}")
+        report_lines.append("-" * 50)
 
-        if overall_risk != "OK":
-            risky_domains.append(domain)
+        if overall in ["CRITICAL", "WARNING"]:
+            overall_risk = overall
 
-    print("\nÖZET")
-    print(f"Toplam domain        : {len(domains)}")
-    print(f"Riskli domain sayısı : {len(risky_domains)}")
+    report = "\n".join(report_lines)
+    print(report)
 
-    if risky_domains:
-        for d in risky_domains:
-            print(f"- {d}")
+    if overall_risk in ["CRITICAL", "WARNING"]:
+        send_mail(
+            subject=f"[ALERT] Domain & SSL Expiry Warning ({overall_risk})",
+            body=report
+        )
 
-    print("\nKontrol tamamlandı")
-
+# =====================
+# ENTRY
+# =====================
 
 if __name__ == "__main__":
     main()
